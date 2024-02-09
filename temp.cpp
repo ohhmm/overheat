@@ -3,8 +3,11 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <coroutine>
+#include <future>
 #include <iostream>
 #include <memory>
+#include <queue>
 #include <regex>
 // #include <signal.h>
 #include <sstream>
@@ -20,7 +23,7 @@
 #include <sys/types.h>
 
 
-constexpr auto High = 95;
+constexpr auto High = 90;
 constexpr auto Cool = 85;
 
 std::string extract_temperature() {
@@ -50,7 +53,6 @@ std::string extract_temperature() {
 // Function to simulate temperature readings (user input in this case)
 auto getTemperature() {
     auto tstr = extract_temperature();
-    std::cout << tstr << std::endl;
     return atof(tstr.c_str());
 }
 
@@ -59,17 +61,18 @@ void controlProcessGroup(pid_t pgid, int signal) {
     killpg(pgid, signal); // Send the signal to the process group
 }
 
-std::vector<pid_t> getChildProcesses(pid_t parent_pid) {
+
+std::vector<pid_t> traverseChildProcesses(pid_t parent_pid, const std::function<void(int)>& cb) {
     std::vector<pid_t> child_pids;
     // Command to get child PIDs of the parent PID
     std::string command = "pgrep -P " + std::to_string(parent_pid);
-    char buffer[128];
     std::string result = "";
-    FILE* pipe = popen(command.c_str(), "r");
+    auto pipe = popen(command.c_str(), "r");
     if (!pipe) {
         std::cerr << "Error: Failed to open pipe for command: " << command << std::endl;
         return child_pids;
     }
+    char buffer[128];
     while (fgets(buffer, sizeof buffer, pipe) != nullptr) {
         result += buffer;
     }
@@ -79,8 +82,9 @@ std::vector<pid_t> getChildProcesses(pid_t parent_pid) {
     std::string line;
     while (std::getline(iss, line)) {
         auto pid = std::stoi(line);
+        cb(pid);
         child_pids.push_back(pid);
-        for(auto child: getChildProcesses(pid))
+        for(auto child: traverseChildProcesses(pid, cb))
             child_pids.push_back(child);
     }
     return child_pids;
@@ -115,21 +119,21 @@ int main(int argc, char* argv[]) {
         while (true) {
             // Get temperature (placeholder for actual temperature check)
             auto current_temp = getTemperature(); // Placeholder for actual temperature
+            std::cout << current_temp << "°C" << std::endl;
 
             static std::vector<pid_t> children;
             if (!pause && current_temp >= High) {
-                std::cout << "Temperature reached " << High << "°C." << std::endl;
-                children = getChildProcesses(pid);
-                if(children.size()){
+                std::cout << "Temperature reached " << High << "°C." << std::endl
+                    << "Pausing the command and its descendants." << std::endl
+                    << "SIGSTOP";
+                children = traverseChildProcesses(pid, [&](auto pid){
+                    std::cout << ' ' << pid 
+                    // << ' ' << getTemperature() << "°C"
+                    ;
+                    kill(pid, SIGSTOP);
                     pause = true;
-                    std::cout << "Pausing the command and its descendants." << std::endl
-                            << "SIGSTOP";
-                    for (auto child_pid : children) {
-                        std::cout << ' ' << child_pid;
-                        kill(child_pid, SIGSTOP); // Send SIGSTOP to the process group
-                    }
-                    std::cout << std::endl;
-                }
+                });
+                std::cout << std::endl;
             } else if (pause && current_temp <= Cool) {
                 std::cout << "Temperature dropped below " << Cool << "°C. Resuming the command and its descendants." << std::endl;
                 pause = {};
