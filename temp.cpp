@@ -24,7 +24,7 @@
 
 
 constexpr auto High = 90;
-constexpr auto Cool = 85;
+constexpr auto Cool = 77;
 
 std::string extract_temperature() {
     std::array<char, 128> buffer;
@@ -97,6 +97,8 @@ void signalHandler(int signal) {
 }
 
 int main(int argc, char* argv[]) {
+    int ec = 0;
+
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " <command>" << std::endl;
         return 1;
@@ -116,7 +118,10 @@ int main(int argc, char* argv[]) {
         std::signal(SIGTERM, signalHandler);
 
         bool pause = {};
-        while (true) {
+        int status;
+        pid_t result;
+        do
+        {
             // Get temperature (placeholder for actual temperature check)
             auto current_temp = getTemperature(); // Placeholder for actual temperature
             std::cout << current_temp << "°C" << std::endl;
@@ -143,12 +148,15 @@ int main(int argc, char* argv[]) {
             }
 
             sleep(1); // Sleep for a second before the next check
-        }
+            result = waitpid(pid, &status, WNOHANG);
+        } while (result != pid);
+        ec = WEXITSTATUS(status);
+        std::cout << "Child process has ended with status " << ec << std::endl;
     } else {
         // Error occurred
         std::cerr << "Error: fork failed" << std::endl;
         return 1;
     }
 
-    return 0;
+    return ec;
 }
