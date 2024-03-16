@@ -1,2 +1,2 @@
 #!/bin/bash
-g++ temp.cpp -fcoroutines -o temp
+g++ --std=c++23 temp.cpp -fcoroutines -fmodules-ts  -o temp
