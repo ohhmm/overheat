@@ -1,5 +1,5 @@
-
 #include <array>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -9,19 +9,17 @@
 #include <memory>
 #include <queue>
 #include <regex>
-// #include <signal.h>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <sys/wait.h>
+#include <thread>
 #include <vector>
-// #include <unistd.h>
 
-#include <vector>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/types.h>
 
+#include "stl-waitwrap-generator.hpp"
 
 constexpr auto High = 90;
 constexpr auto Cool = 77;
@@ -62,32 +60,30 @@ void controlProcessGroup(pid_t pgid, int signal) {
 }
 
 
-std::vector<pid_t> traverseChildProcesses(pid_t parent_pid, const std::function<void(int)>& cb) {
-    std::vector<pid_t> child_pids;
+std::generator<pid_t> traverseChildProcesses(pid_t parent_pid) {
     // Command to get child PIDs of the parent PID
     std::string command = "pgrep -P " + std::to_string(parent_pid);
-    std::string result = "";
     auto pipe = popen(command.c_str(), "r");
     if (!pipe) {
         std::cerr << "Error: Failed to open pipe for command: " << command << std::endl;
-        return child_pids;
-    }
-    char buffer[128];
-    while (fgets(buffer, sizeof buffer, pipe) != nullptr) {
-        result += buffer;
-    }
-    pclose(pipe);
+    } else {
+        std::string result;
+        char buffer[128];
+        while (fgets(buffer, sizeof buffer, pipe) != nullptr) {
+            result += buffer;
+        }
+        pclose(pipe);
 
-    std::istringstream iss(result);
-    std::string line;
-    while (std::getline(iss, line)) {
-        auto pid = std::stoi(line);
-        cb(pid);
-        child_pids.push_back(pid);
-        for(auto child: traverseChildProcesses(pid, cb))
-            child_pids.push_back(child);
+        std::istringstream iss(result);
+        std::string line;
+        while (std::getline(iss, line)) {
+            auto pid = std::stoi(line);
+            co_yield pid;
+            auto genChildPids = traverseChildProcesses(pid);
+            while (genChildPids)
+                co_yield genChildPids();
+        }
     }
-    return child_pids;
 }
 
 void signalHandler(int signal) {
@@ -105,7 +101,6 @@ int main(int argc, char* argv[]) {
     }
 
     auto pid = fork(); // Create a new process
-
     if (pid == 0) {
         // Child process: Execute the command
         execvp(argv[1], argv + 1);
@@ -120,24 +115,28 @@ int main(int argc, char* argv[]) {
         bool pause = {};
         int status;
         pid_t result;
+        std::vector<pid_t> children;
         do
         {
             // Get temperature (placeholder for actual temperature check)
             auto current_temp = getTemperature(); // Placeholder for actual temperature
             std::cout << current_temp << "°C" << std::endl;
 
-            static std::vector<pid_t> children;
             if (!pause && current_temp >= High) {
                 std::cout << "Temperature reached " << High << "°C." << std::endl
-                    << "Pausing the command and its descendants." << std::endl
-                    << "SIGSTOP";
-                children = traverseChildProcesses(pid, [&](auto pid){
-                    std::cout << ' ' << pid 
-                    // << ' ' << getTemperature() << "°C"
-                    ;
-                    kill(pid, SIGSTOP);
+                    << "Pausing the command and its descendants." << std::endl;
+                                
+                auto genChildPids = traverseChildProcesses(pid);
+                std::cout << "SIGSTOP";
+                while (genChildPids) {
+                    auto child_pid = genChildPids();
+                    std::cout << ' ' << child_pid
+                        // << ' ' << getTemperature() << "°C"
+                        ;
+                    kill(child_pid, SIGSTOP);
                     pause = true;
-                });
+                    children.emplace_back(child_pid);
+                }
                 std::cout << std::endl;
             } else if (pause && current_temp <= Cool) {
                 std::cout << "Temperature dropped below " << Cool << "°C. Resuming the command and its descendants." << std::endl;
@@ -147,7 +146,8 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            sleep(1); // Sleep for a second before the next check
+            // Sleep for a second before the next check
+            std::this_thread::sleep_for(std::chrono::seconds(1));
             result = waitpid(pid, &status, WNOHANG);
         } while (result != pid);
         ec = WEXITSTATUS(status);
